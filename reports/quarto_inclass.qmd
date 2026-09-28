@@ -1,0 +1,161 @@
+---
+title: "CHL5233: Quarto in-class assignment"
+author: "Luna Jia Ning Zhan"
+format: 
+  pdf:
+    geometry:
+      - top=30mm
+      - left=20mm
+      - heightrounded
+execute:
+  echo: false
+  warning: false
+---
+
+
+
+
+```{r}
+# For this in-class assignment, you will work in a group to create your **individual** Quarto document. Please consult your classmates and [Tutorial: Authoring](https://quarto.org/docs/get-started/authoring/rstudio.html) webpage by [Quarto](https://quarto.org/). You can also use the Internet including ChatGPT. The TA and I are also available for any questions.
+
+# When you are finished, render the document to PDF. Please carefully **proof read** and make edits as needed. **Commit** and **push** the edits to this file and the new PDF file to your **new repository**. 
+
+# ## Create a **new** repository
+
+# - Under your GitHub account, create a **new** respository called `armed_conflict`
+#   - Throughout the course, we will use this repository to **reproduce** and **replicate** the analysis in the paper
+# - Create **two** folders
+#   - `data`
+#   - `reports` 
+# - Save `countries.txt` and `regions.txt` into `data/raw/` subfolder
+# - Save `quarto_inclass.qmd` into `reports/` folder
+# - Eventually, your repository will have a very organized structure like this:
+
+
+# ### Example of data science organization
+# ```text
+# armed_conflict/
+# ├── README.md
+# ├── data/
+# │   ├── raw/
+# │   └── processed/
+# ├── scripts/
+# │   ├── 01_import.R
+# │   ├── 02_clean.R
+# │   └── 03_analysis.R
+# ├── outputs/
+# │   ├── figures/
+# │   └── tables/
+# └── reports/
+#     └── analysis.qmd
+# ```
+# ## Edit this file to create a PDF document using Quarto
+
+# # The R code chunk below includes the R packages required to knit this document. This is often called a **setup** code. We want the code to run, but we don't want the final document to show the code or results. Edit the code chunk so that the code will run but the code and results (including all warnings and messages) are hidden from the final PDF output.
+
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+
+knitr::opts_chunk$set(message =  F, echo = F, warning = F, fig.width = 9, fig.height = 8)
+```
+
+
+
+For this exercise, we will use the following two data sets.
+
+1. `countries.txt`: A data set that contains a list of countries used in the paper "Implications of armed conflict for maternal and child health: A regression analysis of data from 181 countries for 2000–2019" and their three-digit ISO (International Organization for Standardization) code. 
+
+2. `regions.txt`: A data set that contains a list of all major countries in the world and their
+    a. ISO code (`country_code`)
+    b. region (`region`)
+    c. sub-region (`sub_region`)
+    d. numerical region code (`region_code`)
+    e. numerical sub-region code (`sub_region_code`)
+
+
+
+
+## Read in data and create an analytical data set
+
+```{r}
+#| echo: false
+
+# The **final goal** is to display a **bar chart** that depicts how many countries are in each region. 
+#| # **First**, edit the code chunk below that reads in `countries.txt` to also display the number of rows and columns of the data. 
+
+countries <- read.table("C:/Biostat/Predictive Modelling/git repository/armed_conflict/data/raw/countries.txt", header = TRUE)
+
+summary(countries)
+nrow(countries)
+ncol(countries)
+
+```
+
+*There are `r length(unique(countries$country_name))` countries in the countries dataset.* 
+
+
+```{r}
+# **Second**, read in `regions.txt` and also write a sentence that states how many countries are included in the data set.
+regions <- read.table("C:/Biostat/Predictive Modelling/git repository/armed_conflict/data/raw/regions.txt", header = TRUE)
+
+summary(regions)
+
+```
+
+
+```{r}
+##  **Third**, subset the `regions` data set to only include countries from the `countries` data set.
+## checking join 
+# anti_join(countries, regions, by = c("ISO" = "country_code"))
+# anti_join(regions, countries, by = c( "country_code" = "ISO"))
+regions <- inner_join(regions, countries, by = c("country_code" = "ISO"))
+```
+
+{{< pagebreak >}}
+
+## Tabulate countries by region and sub-region
+
+
+```{r}
+#Next, we want to find out how many countries are in a region. Use the `group_by()` and `summarise()` functions in the `dplyr` package to count the number of countries in each region. Then use the `kable()` function in the `knitr` package to create a simple table with the column headers, "Region" and "Count". 
+regions |> group_by(region) |> summarise( n= n()) |> knitr::kable(
+  col.names = c("Region", "Count"), caption = "Number of countries in each region")
+
+# regions |> group_by(region) |> tally() |> knitr::kable(
+#   col.names = c("Region", "Count"), caption = "Number of countries in each region")
+```
+
+
+
+
+```{r}
+#Create a similar table that shows the number of countries in each **sub-region**.
+regions |> group_by(sub_region) |> summarise( n= n())  |> knitr::kable(
+  col.names = c("Subregion", "Count"), caption = "Number of countries in each subregion")
+```
+
+
+{{< pagebreak >}}
+
+## Data visualization using ggplot
+
+```{r}
+library(ggplot2)
+library(paletteer)
+
+# Here, we will use `geom_bar()` function within `ggplot()` to create a bar chart that displays the **number of countries** in each **sub-region**. 
+
+# 1. Color code each sub-region by **region**.
+# 2. Create bars that run horizontally where sub-region names appear along the y-axis. 
+# 3. Order the bars such that the sub-region with the most number countries appear at the top and the sub-region with the least number of countries appear at the bottom. 
+
+regions |> 
+  ggplot(aes(y = fct_rev(fct_infreq(sub_region)), fill = region))+
+  geom_bar() +
+  theme_minimal() + 
+  labs(y = "Subregion", x = "Number of Countries", fill = NULL) +
+  theme(legend.position = "top",
+        axis.text.x = element_text(angle = 30, hjust = 1)) + 
+          scale_fill_paletteer_d("ggsci::default_jco")
+```
