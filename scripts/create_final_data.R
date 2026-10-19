@@ -1,10 +1,12 @@
-
+library(dplyr)
+library(tidyr)
+library(purrr)
 # read in all other datasets 
 
-infmor0 <- read.csv("../data/raw/infant_mortality.csv", header = TRUE)
-matmor0 <- read.csv("../data/raw/maternal_mortality.csv", header = TRUE)
-neomor0 <- read.csv("../data/raw/neonatal_mortality.csv", header = TRUE)
-un5mor0 <- read.csv("../data/raw/under5_mortality.csv", header = TRUE)
+infmor0 <- read.csv("./data/raw/infant_mortality.csv", header = TRUE)
+matmor0 <- read.csv("./data/raw/maternal_mortality.csv", header = TRUE)
+neomor0 <- read.csv("./data/raw/neonatal_mortality.csv", header = TRUE)
+un5mor0 <- read.csv("./data/raw/under5_mortality.csv", header = TRUE)
 
 
 
@@ -30,12 +32,12 @@ un5mor <- wbfun(dataname = un5mor0, varname = "un5mor")
 wblist <- list(matmor, infmor, neomor, un5mor)
 
 #merge all data frames in list
-wblist |> reduce(full_join, by = c('iso', 'year')) -> wbdata ## apply full join to each item in list iteratively 
+wbdata <- wblist |> reduce(full_join, by = c('iso', 'year')) ## apply full join to each item in list iteratively 
 
 
 
 #prepare disaster data 
-disaster0 <- read.csv("../data/raw/disaster.csv", header = TRUE)
+disaster0 <- read.csv("./data/raw/disaster.csv", header = TRUE)
 
 disaster0 <- disaster0 |> 
   janitor::clean_names()
@@ -51,7 +53,7 @@ disaster <- left_join( wbdata |> select(iso, year), disaster, by = c("iso", "yea
 
 disaster <- disaster |> mutate(
   event = ifelse(is.na(disaster_type), 0, event),
-  disaster_type = ifelse(is.na(disaster_type), "Earthquake", disaster_type))
+  disaster_type = ifelse(is.na(disaster_type), "Earthquake", disaster_type)) ## coding no event as 0 after pivot-wider
 
 
 ## create dummy variable of drought and earthquake per country per year
@@ -67,7 +69,7 @@ disaster <- disaster |>
 
 
 #prepare disaster data 
-conflict <- read.csv("../data/raw/conflict.csv", header = TRUE)
+conflict <- read.csv("./data/raw/conflict.csv", header = TRUE)
 
 conflict <- conflict |> 
   group_by(iso, year) |> 
@@ -77,13 +79,19 @@ conflict <- conflict |>
 # deaths; 1 = yes, �25 battle-related deaths)
   year = year + 1) ## lag 1 year, eg year 1999 predicts deaths in year 2000  
 
+
+# load covariates 
+covariates <- read.csv("./data/raw/covariates.csv")
+
 # merge all data 
-data <- list(wbdata, disaster, conflict)
+data <- list(covariates, disaster, conflict)
 
 #merge all data frames in list
 data |> reduce(full_join, by = c('iso', 'year')) -> data
+## retains missing conflicts as NA 
 
-write.csv(data, "../data/processed/data.csv", row.names = FALSE, na = "")
+
+write.csv(data, "./data/processed/data.csv", row.names = FALSE, na = "")
 
 head(data)
 
