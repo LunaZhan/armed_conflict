@@ -85,6 +85,7 @@ format_table <- function(x, ..., font_size = 8) {
 ```
 
 ## First look at the data
+- variable class and sample size 
 
 ```{r}
 #| label: variable-classes
@@ -430,6 +431,7 @@ conflict_summary("median") |> format_table(digits = 2)
 ##  Descriptive summary table of all variables in dataset by binary armed conflict status 
 - all continuous variables summarized by mean and sd
 ```{r}
+#| label: data-mean
 vars <- continuous_variables
 conflict_summary("mean") |> format_table(digits = 2)
 ```

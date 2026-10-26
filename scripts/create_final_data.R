@@ -84,7 +84,7 @@ conflict <- conflict |>
 covariates <- read.csv("./data/raw/covariates.csv")
 
 # merge all data 
-data <- list(covariates, disaster, conflict)
+data <- list(wbdata,covariates, disaster, conflict)
 
 #merge all data frames in list
 data |> reduce(full_join, by = c('iso', 'year')) -> data
