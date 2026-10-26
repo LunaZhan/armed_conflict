@@ -20,16 +20,16 @@ wb_to_long <- function(path, variable_name) {
 
 # Confounders: mortality measures, one row per ISO code and year.
 infant_mortality <- wb_to_long(
-  "../data/raw/infant_mortality.csv", "infant_mortality"
+  "./data/raw/infant_mortality.csv", "infant_mortality"
 )
 maternal_mortality <- wb_to_long(
-  "../data/raw/maternal_mortality.csv", "maternal_mortality"
+  "./data/raw/maternal_mortality.csv", "maternal_mortality"
 )
 neonatal_mortality <- wb_to_long(
-  "../data/raw/neonatal_mortality.csv", "neonatal_mortality"
+  "./data/raw/neonatal_mortality.csv", "neonatal_mortality"
 )
 under5_mortality <- wb_to_long(
-  "../data/raw/under5_mortality.csv", "under5_mortality"
+  "./data/raw/under5_mortality.csv", "under5_mortality"
 )
 
 # Mortality data establish the analysis panel (each unique ISO-year once).
@@ -39,8 +39,13 @@ analysis_data <- infant_mortality |>
   full_join(under5_mortality, by = c("iso", "year")) |>
   distinct(iso, year, .keep_all = TRUE)
 
+# Country-year covariates.
+covariates <- read.csv("./data/raw/covariates.csv", check.names = FALSE) |>
+  mutate(year = as.integer(year)) |>
+  distinct(iso, year, .keep_all = TRUE)
+
 # Disaster confounders: indicators of at least one event in a country-year.
-disaster_data <- read.csv("../data/raw/disaster.csv", check.names = FALSE) |>
+disaster_data <- read.csv("./data/raw/disaster.csv", check.names = FALSE) |>
   clean_names() |>
   filter(
     year >= 2000, year <= 2019,
@@ -62,7 +67,7 @@ disaster_data <- read.csv("../data/raw/disaster.csv", check.names = FALSE) |>
 
 # Exposure: sum battle-related deaths by country-year, use the >= 25 threshold,
 # then assign it to the following outcome year (e.g., 1999 -> 2000).
-conflict_data <- read.csv("../data/raw/conflict.csv", check.names = FALSE) |>
+conflict_data <- read.csv("./data/raw/conflict.csv", check.names = FALSE) |>
   filter(!is.na(iso), iso != "", !is.na(year)) |>
   group_by(iso, year) |>
   summarise(battle_deaths = sum(best, na.rm = TRUE), .groups = "drop") |>
@@ -73,6 +78,7 @@ conflict_data <- read.csv("../data/raw/conflict.csv", check.names = FALSE) |>
   )
 
 final_data <- analysis_data |>
+  left_join(covariates, by = c("iso", "year")) |>
   left_join(disaster_data, by = c("iso", "year")) |> ## disagree with leftjoin, in case there was missing data in outcomes data
   left_join(conflict_data, by = c("iso", "year")) |>
   mutate(
@@ -89,4 +95,4 @@ stopifnot(
   all(final_data$conflict_lag1 %in% c(0L, 1L))
 )
 
-write.csv(final_data, "../data/processed/data.csv", row.names = FALSE, na = "")
+write.csv(final_data, "./data/processed/data_coagent.csv", row.names = FALSE, na = "")

@@ -1,0 +1,435 @@
+---
+title: "CHL5233: Exploratory Data Analysis"
+author: "Luna Jia Ning Zhan"
+format: 
+  pdf:
+    geometry:
+      - top=30mm
+      - left=20mm
+      - heightrounded
+execute:
+  echo: false
+  warning: false
+---
+
+
+
+```{r}
+#| label: setup
+#| include: false
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(knitr)
+library(finalfit)
+library(oncreportr)
+
+analysis_data <- read.csv(
+  "../data/processed/data.csv",
+  na.strings = "",
+  check.names = FALSE
+)
+
+key_variables <- c("iso", "year")
+analysis_variables <- setdiff(names(analysis_data), key_variables)
+outcome_variables <- intersect(c("matmor", "infmor", "neomor", "un5mor"),
+                               names(analysis_data))
+
+# Single source of display labels for every dataset column.
+recode <- tibble(
+  var = c(
+    "iso", "year", "matmor", "infmor", "neomor", "un5mor", "gdp_1000",
+    "oecd", "pop_dens", "urban", "age_dep", "male_edu", "temp",
+    "rainfall_1000", "Drought", "Earthquake", "death_sum", "conflict",
+    "conflict_intensity", "death_sum_quintile", "any_missingness"
+  ),
+  label = c(
+    "Country (ISO code)", "Year", "Maternal mortality", "Infant mortality",
+    "Neonatal mortality", "Under-5 mortality", "GDP per capita", "OECD member",
+    "Population density", "Urban residence", "Age dependency ratio",
+    "Male education", "Temperature", "Rainfall", "Drought", "Earthquake",
+    "Battle-related deaths", "Armed conflict", "Conflict intensity",
+    "Battle-related deaths: none or positive-death quintile", "Any Missingness"
+  )
+)
+stopifnot(all(names(analysis_data) %in% recode$var))
+
+variable_labels <- setNames(recode$label, recode$var)
+label_variable <- function(x) {
+  labels <- unname(variable_labels[as.character(x)])
+  ifelse(is.na(labels), as.character(x), labels)
+}
+
+# Use compact, centred tables that stay within the page width in PDF output.
+format_table <- function(x, ..., font_size = 8) {
+  table <- kableExtra::kbl(x, ..., booktabs = TRUE)
+
+  if (knitr::is_latex_output()) {
+    table |>
+      kableExtra::kable_styling(
+        latex_options = c("striped", "hold_position", "scale_down"),
+        font_size = font_size,
+        full_width = FALSE,
+        position = "center"
+      )
+  } else {
+    table |>
+      kableExtra::kable_styling(
+        bootstrap_options = c("striped", "condensed", "responsive"),
+        full_width = FALSE,
+        position = "center"
+      )
+  }
+}
+```
+
+## First look at the data
+
+```{r}
+#| label: variable-classes
+
+# Keep the country code as a character identifier; use numeric types for
+# continuous measures and factors for binary indicators.
+continuous_variables <- intersect(
+  c(
+    "matmor", "infmor", "neomor", "un5mor", "gdp_1000", "pop_dens",
+    "urban", "age_dep", "male_edu", "temp", "rainfall_1000", "death_sum"
+  ),
+  names(analysis_data)
+)
+binary_variables <- intersect(
+  c("oecd", "Drought", "Earthquake", "conflict"),
+  names(analysis_data)
+)
+
+analysis_data <- analysis_data |>
+  mutate(
+    iso = as.character(iso),
+    year = as.integer(year),
+    across(all_of(continuous_variables), as.numeric),
+    across(all_of(binary_variables), ~ factor(.x, levels = c(0, 1)))
+  )
+
+make_death_quintile <- function(x) {
+  result <- rep(NA_character_, length(x))
+  result[!is.na(x) & x == 0] <- "None (0 deaths)"
+
+  positive_deaths <- !is.na(x) & x > 0
+  result[positive_deaths] <- paste0(
+    "Positive deaths: quintile ",
+    dplyr::ntile(x[positive_deaths], n = 5)
+  )
+
+  factor(
+    result,
+    levels = c(
+      "None (0 deaths)",
+      paste0("Positive deaths: quintile ", 1:5)
+    ),
+    ordered = TRUE
+  )
+}
+
+analysis_data <- analysis_data |>
+  mutate(
+    conflict_intensity = factor(
+      case_when(
+        is.na(death_sum) ~ NA_character_,
+        death_sum < 25 ~ "No conflict (<25 deaths)",
+        death_sum < 1000 ~ "Minor conflict (25-999 deaths)",
+        death_sum >= 1000 ~ "War (>=1,000 deaths)"
+      ),
+      levels = c(
+        "No conflict (<25 deaths)",
+        "Minor conflict (25-999 deaths)",
+        "War (>=1,000 deaths)"
+      ),
+      ordered = TRUE
+    ),
+    death_sum_quintile = make_death_quintile(death_sum)
+  )
+
+# Include the derived conflict measures in the downstream summaries and plots.
+analysis_variables <- setdiff(names(analysis_data), key_variables)
+
+variable_classes <- tibble(
+  Variable = label_variable(names(analysis_data)),
+  Class = vapply(analysis_data, function(x) class(x)[1], character(1))
+)
+format_table(variable_classes)
+
+analysis_data <- analysis_data |>
+  mutate(
+    any_missingness = if_any(all_of(analysis_variables), is.na)
+  )
+
+```
+
+
+```{r}
+#| label: data-sample
+
+set.seed(20261026)
+sample_columns <- intersect(
+  c(key_variables, outcome_variables, "gdp_1000", "rainfall_1000", "male_edu", "conflict"),
+  names(analysis_data)
+)
+sample_data <- analysis_data |>
+  slice_sample(n = min(10, nrow(analysis_data))) |>
+  select(all_of(sample_columns))
+format_table(sample_data, col.names = label_variable(names(sample_data)))
+
+```
+
+## Individual variables
+
+The table below gives the type, observed range, and overall missingness of each analysis variable. 
+
+```{r}
+#| label: variable-summary
+
+variable_summary <- analysis_data |>
+  summarise(across(
+    all_of(analysis_variables),
+    list(
+      class = ~ class(.x)[1],
+      missing_n = ~ sum(is.na(.x)),
+      missing_prop = ~ mean(is.na(.x)),
+      minimum = ~ if (!is.numeric(.x) || all(is.na(.x))) NA_real_ else min(.x, na.rm = TRUE),
+      median = ~ if (!is.numeric(.x) || all(is.na(.x))) NA_real_ else median(.x, na.rm = TRUE),
+      maximum = ~ if (!is.numeric(.x) || all(is.na(.x))) NA_real_ else max(.x, na.rm = TRUE)
+    ),
+    .names = "{.col}__{.fn}"
+  )) |>
+  pivot_longer(
+    everything(),
+    names_to = c("variable", ".value"),
+    names_sep = "__"
+  ) |>
+  mutate(variable = label_variable(variable)) |>
+  arrange(desc(missing_prop), variable)
+
+format_table(
+  variable_summary,
+  digits = 3,
+  col.names = c("Variable", "Class", "Missing (n)", "Missing (%)", "Minimum", "Median", "Maximum")
+)
+
+
+```
+
+# visualizing year pattern in missing maternal mortality data
+```{r}
+analysis_data  |> group_by(`Missing Maternal Mortality` =  is.na(matmor), year)  |> tally()
+```
+
+There's >1% missingness in two variables. Maternal mortality is missing in 11.5% of observations, as it is only observed from 2000-2017. GPD per capita is missing in 1.7% of observations. 
+
+
+
+```{r}
+#| label: outcome-distributions
+#| fig-cap: "Distributions of mortality outcomes across country-years."
+
+analysis_data |>
+  pivot_longer(
+    all_of(outcome_variables),
+    names_to = "outcome",
+    values_to = "value"
+  ) |>
+  ggplot(aes(x = value)) +
+  geom_histogram(bins = 30, colour = "white", fill = "#2C7FB8") +
+  facet_wrap(~ outcome, scales = "free", labeller = as_labeller(variable_labels)) +
+  labs(x = "Mortality rate", y = "Country-years", title = "Mortality outcome distributions") +
+  theme_minimal()
+```
+
+## Missing data
+
+The following plots show whether missingness is patterned by time, country, or conflict status. 
+
+
+```{r}
+#| label: missingness-data
+#| include: false
+
+missing_long <- analysis_data |>
+  mutate(
+    conflict_status = case_when(
+      is.na(conflict) ~ "Conflict status missing",
+      as.character(conflict) == "0" ~ "No conflict",
+      as.character(conflict) == "1" ~ "Conflict",
+      TRUE ~ "Other"
+    ),
+    conflict_status = factor(
+      conflict_status,
+      levels = c("No conflict", "Conflict", "Conflict status missing", "Other")
+    )
+  ) |>
+  pivot_longer(
+    all_of(analysis_variables),
+    names_to = "variable",
+    values_to = "value",
+    values_transform = list(value = as.character)
+  ) |>
+  mutate(is_missing = is.na(value))
+
+missing_by_year <- missing_long |>
+  group_by(year, variable) |>
+  summarise(proportion_missing = mean(is_missing), .groups = "drop")
+
+missing_by_country <- missing_long |>
+  group_by(iso, variable) |>
+  summarise(proportion_missing = mean(is_missing), .groups = "drop")
+
+missing_by_conflict <- missing_long |>
+  group_by(conflict_status, variable) |>
+  summarise(proportion_missing = mean(is_missing), .groups = "drop")
+```
+
+```{r}
+#| label: missingness-by-year
+#| fig-cap: "Proportion missing for each variable in each year."
+
+ggplot(missing_by_year,
+       aes(x = year, y = variable, fill = proportion_missing)) +
+  geom_tile() +
+  scale_fill_viridis_c(labels = scales::percent_format()) +
+  scale_y_discrete(labels = label_variable) +
+  labs(x = "Year", y = "Variable", fill = "Missing", title = "Missingness by year") +
+  theme_minimal()
+```
+
+
+```{r}
+#| label: missingness-by-country
+#| fig-cap: "Proportion missing for each variable within each country over 2000--2019."
+
+ggplot(missing_by_country,
+       aes(x = iso, y = variable, fill = proportion_missing)) +
+  geom_tile() +
+  scale_fill_viridis_c(labels = scales::percent_format()) +
+  scale_y_discrete(labels = label_variable) +
+  labs(x = "Country (ISO code)", y = "Variable", fill = "Missing",
+       title = "Missingness by country") +
+  theme_minimal() +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+```
+
+
+## viewing some data where variables are missing
+
+```{r}
+#| label: missingvars
+sample_data <- analysis_data |> 
+  filter(is.na(infmor)) |> 
+  select(all_of(sample_columns))
+format_table(sample_data, col.names = label_variable(names(sample_data)))
+
+sample_data <- analysis_data |> 
+  filter(is.na(rainfall_1000)) |> 
+  select(all_of(sample_columns))
+format_table(sample_data, col.names = label_variable(names(sample_data)))
+
+```
+
+As shown in @missingness-by-country, some countries may have missing data in multiple variables. For example Puerto Rico with mortality outcomes data,  Ivory Coast in weather and education variables. 
+
+```{r}
+#| label: missingness-by-conflict
+#| fig-cap: "Proportion missing for each variable by conflict status."
+
+
+ggplot(missing_by_conflict,
+       aes(x = conflict_status, y = variable, fill = proportion_missing)) +
+  geom_tile() +
+  scale_fill_viridis_c(labels = scales::percent_format()) +
+  scale_y_discrete(labels = label_variable) +
+  labs(x = "Armed conflict status", y = "Variable", fill = "Missing",
+       title = "Missingness by conflict status") +
+  theme_minimal()
+```
+
+```{r}
+#| label: missingness-by-conflict-table
+
+missingtab <- analysis_data |> 
+  group_by(conflict, any_missingness) |> 
+  tally() |> 
+  group_by(conflict) |> 
+  mutate(
+proportion_missing = n/sum(n)
+)
+format_table(missingtab) 
+```
+
+Missingness is slightly higher in country-years with armed conflict. There are 3205 observations with no missingness in any variables. 
+
+## Relationship between conflict and mortality outcomes
+
+This descriptive plot compares mortality outcomes across the observed conflict
+indicator. It is not an adjusted or causal comparison.
+
+```{r}
+#| label: outcomes-by-conflict
+#| fig-cap: "Mortality outcomes by conflict status."
+
+analysis_data |>
+  filter(!is.na(conflict)) |>
+  mutate(
+    conflict_status = if_else(
+      as.character(conflict) == "1", "Conflict", "No conflict"
+    )
+  ) |>
+  pivot_longer(
+    all_of(outcome_variables),
+    names_to = "outcome",
+    values_to = "mortality_rate"
+  ) |>
+  ggplot(aes(x = conflict_status, y = mortality_rate, fill = conflict_status)) +
+  geom_boxplot(outlier.alpha = 0.25, show.legend = FALSE) +
+  facet_wrap(~ outcome, scales = "free_y", labeller = as_labeller(variable_labels)) +
+  labs(x = "Armed conflict status", y = "Mortality rate",
+       title = "Mortality outcomes by conflict status") +
+  theme_minimal()
+```
+
+##  Descriptive summary table of all variables in dataset by binary armed conflict status 
+- all continuous variables summarized by median and IQR
+```{r}
+#| label: data-overview
+
+byvar <- "conflict"
+vars <- setdiff(analysis_variables, byvar)
+
+conflict_summary <- function(continuous_summary) {
+  finalfit::summary_factorlist(
+    analysis_data,
+    dependent = byvar,
+    explanatory = vars,
+    na_include = TRUE,
+    na_to_prop = F, 
+    cont = continuous_summary,
+    add_col_totals = TRUE, 
+    add_row_totals = TRUE,
+    total_col = TRUE
+  ) |>
+    mutate(label = label_variable(label)) |>
+    rename(
+      Variable = label,
+      `Level or summary` = levels,
+      `No conflict` = `0`,
+      `Armed conflict` = `1`,
+    )
+}
+
+conflict_summary("median") |> format_table(digits = 2)
+```
+
+##  Descriptive summary table of all variables in dataset by binary armed conflict status 
+- all continuous variables summarized by mean and sd
+```{r}
+vars <- continuous_variables
+conflict_summary("mean") |> format_table(digits = 2)
+```

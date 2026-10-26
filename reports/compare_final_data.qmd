@@ -1,0 +1,208 @@
+---
+title: "Comparison of Processed Analysis Datasets"
+format:
+  html:
+    toc: true
+    code-fold: true
+execute:
+  warning: false
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+library(dplyr)
+library(tidyr)
+library(knitr)
+
+data_file <- "../data/processed/data.csv"
+coagent_file <- "../data/processed/data_coagent.csv"
+
+data <- read.csv(data_file, na.strings = "", check.names = FALSE)
+data_coagent <- read.csv(coagent_file, na.strings = "", check.names = FALSE)
+key_columns <- c("iso", "year")
+
+stopifnot(all(key_columns %in% names(data)),
+          all(key_columns %in% names(data_coagent)))
+
+duplicate_keys <- function(x) {
+  x |> count(across(all_of(key_columns))) |> filter(n > 1)
+}
+
+format_columns <- function(x) {
+  if (length(x) == 0) "None" else paste(x, collapse = ", ")
+}
+```
+
+## Dataset overview
+
+```{r}
+#| label: overview
+
+overview <- bind_rows(
+  tibble(
+    dataset = "data.csv",
+    rows = nrow(data),
+    columns = ncol(data),
+    unique_country_years = nrow(distinct(data, across(all_of(key_columns)))),
+    duplicate_country_years = nrow(duplicate_keys(data))
+  ),
+  tibble(
+    dataset = "data_coagent.csv",
+    rows = nrow(data_coagent),
+    columns = ncol(data_coagent),
+    unique_country_years = nrow(distinct(data_coagent, across(all_of(key_columns)))),
+    duplicate_country_years = nrow(duplicate_keys(data_coagent))
+  )
+)
+
+kable(overview)
+```
+
+## Variables
+
+```{r}
+#| label: variable-comparison
+
+data_only <- setdiff(names(data), names(data_coagent))
+coagent_only <- setdiff(names(data_coagent), names(data))
+shared_columns <- intersect(names(data), names(data_coagent))
+shared_value_columns <- setdiff(shared_columns, key_columns)
+
+# Variables with the same meaning but different names in the two files.
+renamed_column_matches <- tribble(
+  ~data_column, ~coagent_column,
+  "Drought", "drought",
+  "Earthquake", "earthquake",
+  "conflict", "conflict_lag1",
+   "matmor", "maternal_mortality",
+   "infmor", "infant_mortality",
+   "neomor", "neonatal_mortality",
+   "un5mor", "under5_mortality"
+)
+
+comparison_map <- bind_rows(
+  tibble(
+    data_column = shared_value_columns,
+    coagent_column = shared_value_columns
+  ),
+  renamed_column_matches
+)
+
+variable_comparison <- bind_rows(
+  tibble(dataset = "data.csv only", variable = data_only),
+  tibble(dataset = "data_coagent.csv only", variable = coagent_only),
+  tibble(dataset = "Shared", variable = shared_columns)
+)
+
+kable(variable_comparison)
+```
+
+`data.csv` only contains: `r format_columns(data_only)`.
+
+`data_coagent.csv` only contains: `r format_columns(coagent_only)`.
+
+The following differently named variables are compared as equivalent fields:
+
+```{r}
+#| label: renamed-variable-matches
+
+kable(renamed_column_matches)
+```
+
+## Country-year coverage
+
+```{r}
+#| label: key-comparison
+
+data_keys <- distinct(data, across(all_of(key_columns)))
+coagent_keys <- distinct(data_coagent, across(all_of(key_columns)))
+
+keys_only_in_data <- anti_join(data_keys, coagent_keys, by = key_columns)
+keys_only_in_coagent <- anti_join(coagent_keys, data_keys, by = key_columns)
+
+key_comparison <- tibble(
+  comparison = c("Country-years only in data.csv",
+                 "Country-years only in data_coagent.csv",
+                 "Country-years shared by both files"),
+  n = c(nrow(keys_only_in_data), nrow(keys_only_in_coagent),
+        nrow(inner_join(data_keys, coagent_keys, by = key_columns)))
+)
+
+kable(key_comparison)
+```
+
+## Shared covariate values
+
+The following table compares missingness and values for common columns as well
+as the explicitly mapped renamed variables. It excludes the `iso` and `year`
+keys. A value difference is counted only when both files have non-missing values
+and the numeric values differ.
+
+```{r}
+#| label: shared-values
+
+joined_data <- inner_join(
+  data |>
+    select(all_of(c(key_columns, comparison_map$data_column))) |>
+    rename_with(~ paste0(.x, "_data"), all_of(comparison_map$data_column)),
+  data_coagent |>
+    select(all_of(c(key_columns, comparison_map$coagent_column))) |>
+    rename_with(
+      ~ paste0(.x, "_coagent"),
+      all_of(comparison_map$coagent_column)
+    ),
+  by = key_columns
+)
+
+value_comparison <- lapply(seq_len(nrow(comparison_map)), function(i) {
+  data_column <- comparison_map$data_column[i]
+  coagent_column <- comparison_map$coagent_column[i]
+  data_value <- joined_data[[paste0(data_column, "_data")]]
+  coagent_value <- joined_data[[paste0(coagent_column, "_coagent")]]
+  same_value <- (is.na(data_value) & is.na(coagent_value)) |
+    (!is.na(data_value) & !is.na(coagent_value) &
+       dplyr::near(data_value, coagent_value))
+
+  tibble(
+    data_column = data_column,
+    coagent_column = coagent_column,
+    missing_in_data = sum(is.na(data_value)),
+    missing_in_coagent = sum(is.na(coagent_value)),
+    values_different = sum(!same_value)
+  )
+}) |> bind_rows()
+
+kable(value_comparison)
+```
+
+```{r}
+#| label: value-difference-details
+
+mismatch_details <- lapply(seq_len(nrow(comparison_map)), function(i) {
+  data_column <- comparison_map$data_column[i]
+  coagent_column <- comparison_map$coagent_column[i]
+  data_value <- joined_data[[paste0(data_column, "_data")]]
+  coagent_value <- joined_data[[paste0(coagent_column, "_coagent")]]
+  differs <- !(is.na(data_value) & is.na(coagent_value)) &
+    (is.na(data_value) | is.na(coagent_value) |
+       !dplyr::near(data_value, coagent_value))
+
+  tibble(
+    iso = joined_data$iso[differs],
+    year = joined_data$year[differs],
+    data_column = data_column,
+    coagent_column = coagent_column,
+    data_value = data_value[differs],
+    coagent_value = coagent_value[differs]
+  )
+}) |> bind_rows()
+
+if (nrow(mismatch_details) == 0) {
+  cat("All non-missing shared covariate values are identical.")
+} else {
+  kable(head(mismatch_details, 20),
+        caption = "First 20 differences in shared covariates")
+}
+```
