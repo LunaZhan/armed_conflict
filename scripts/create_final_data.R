@@ -90,9 +90,74 @@ data <- list(wbdata,covariates, disaster, conflict)
 data |> reduce(full_join, by = c('iso', 'year')) -> data
 ## retains missing conflicts as NA 
 
+analysis_data <- data 
 
-write.csv(data, "./data/processed/data.csv", row.names = FALSE, na = "")
+### Processing variable format 
+regions <- read.table("./data/raw/regions.txt", header = TRUE)
 
-head(data)
+analysis_data <- left_join(analysis_data, regions |> select(country_code, region), by = c("iso" = "country_code"))
+
+continuous_variables <- intersect(
+  c(
+    "matmor", "infmor", "neomor", "un5mor", "gdp_1000", "pop_dens",
+    "urban", "age_dep", "male_edu", "temp", "rainfall_1000", "death_sum"
+  ),
+  names(analysis_data)
+)
+binary_variables <- intersect(
+  c("oecd", "Drought", "Earthquake", "conflict"),
+  names(analysis_data)
+)
+
+analysis_data <- analysis_data |>
+  mutate(
+    iso = as.character(iso),
+    year = as.integer(year),
+    across(all_of(continuous_variables), as.numeric),
+    across(all_of(binary_variables), ~ factor(.x, levels = c(0, 1)))
+  )
+
+make_death_quintile <- function(x) {
+  result <- rep(NA_character_, length(x))
+  result[!is.na(x) & x == 0] <- "None (0 deaths)"
+
+  positive_deaths <- !is.na(x) & x > 0
+  result[positive_deaths] <- paste0(
+    "Positive deaths: quintile ",
+    dplyr::ntile(x[positive_deaths], n = 5)
+  )
+
+  factor(
+    result,
+    levels = c(
+      "None (0 deaths)",
+      paste0("Positive deaths: quintile ", 1:5)
+    ),
+    ordered = TRUE
+  )
+}
+
+analysis_data <- analysis_data |>
+  mutate(
+    conflict_intensity = factor(
+      case_when(
+        is.na(death_sum) ~ NA_character_,
+        death_sum < 25 ~ "No conflict (<25 deaths)",
+        death_sum < 1000 ~ "Minor conflict (25-999 deaths)",
+        death_sum >= 1000 ~ "War (>=1,000 deaths)"
+      ),
+      levels = c(
+        "No conflict (<25 deaths)",
+        "Minor conflict (25-999 deaths)",
+        "War (>=1,000 deaths)"
+      ),
+      ordered = TRUE
+    ),
+    death_sum_quintile = make_death_quintile(death_sum)
+  )
+
+write.csv(analysis_data, "./data/processed/data.csv", row.names = FALSE, na = "")
+
+
 
  

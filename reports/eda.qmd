@@ -26,7 +26,7 @@ library(finalfit)
 library(oncreportr)
 
 analysis_data <- read.csv(
-  "../data/processed/data.csv",
+  "./data/processed/data.csv",
   na.strings = "",
   check.names = FALSE
 )
@@ -300,6 +300,8 @@ ggplot(missing_by_year,
   scale_y_discrete(labels = label_variable) +
   labs(x = "Year", y = "Variable", fill = "Missing", title = "Missingness by year") +
   theme_minimal()
+
+
 ```
 
 
