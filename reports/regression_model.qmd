@@ -1,0 +1,352 @@
+---
+title: "CHL5233: Regression model of the Analysis Dataset"
+author: "Luna Jia Ning Zhan"
+format:
+  pdf:
+    geometry:
+      - top=30mm
+      - left=20mm
+      - heightrounded
+execute:
+  echo: false
+  warning: false
+---
+
+
+
+```{r}
+#| label: setup
+#| include: false
+
+library(dplyr)
+library(tidyr)
+library(knitr)
+library(finalfit)
+library(ggplot2)
+
+
+analysis_data <- read.csv(
+  "../data/processed/data.csv",
+  na.strings = "",
+  check.names = FALSE
+)
+
+
+key_variables <- c("iso", "year")
+
+# Single source of display labels and table sections for every dataset column.
+# Rows are listed in the order they appear in the tables.
+recode <- tibble::tribble(
+  ~var,                 ~label,                                                   ~group,
+  "iso",                "Country (ISO code)",                                     "Identifier",
+  "year",               "Year",                                                   "Identifier",
+  "matmor",             "Maternal mortality (per 100,000 live births)",           "Mortality outcomes",
+  "infmor",             "Infant mortality (per 1,000 live births)",               "Mortality outcomes",
+  "neomor",             "Neonatal mortality (per 1,000 live births)",             "Mortality outcomes",
+  "un5mor",             "Under-5 mortality (per 1,000 live births)",              "Mortality outcomes",
+  "gdp_1000",           "GDP per capita (1,000 USD)",                             "Socioeconomic and demographic",
+  "oecd",               "OECD member",                                            "Socioeconomic and demographic",
+  "pop_dens",           "Population density (%)",                                 "Socioeconomic and demographic",
+  "urban",              "Urban residence (%)",                                    "Socioeconomic and demographic",
+  "age_dep",            "Age dependency ratio",                                   "Socioeconomic and demographic",
+  "male_edu",           "Male education (years)",                                 "Socioeconomic and demographic",
+  "region",             "Region",                                                 "Geography and environment",
+  "temp",               "Temperature (°C)",                                       "Geography and environment",
+  "rainfall_1000",      "Rainfall (1,000 mm)",                                    "Geography and environment",
+  "Drought",            "Drought",                                                "Geography and environment",
+  "Earthquake",         "Earthquake",                                             "Geography and environment",
+  "conflict",           "Armed conflict",                                         "Armed conflict",
+  "death_sum",          "Battle-related deaths",                                  "Armed conflict",
+  "conflict_intensity", "Conflict intensity",                                     "Armed conflict",
+  "death_sum_quintile", "Battle-related deaths (quintile)",                       "Armed conflict",
+  "any_missingness",    "Any missingness",                                        "Missingness"
+)
+stopifnot(all(names(analysis_data) %in% recode$var))
+
+variable_labels <- setNames(recode$label, recode$var)
+variable_groups <- setNames(recode$group, recode$var)
+label_variable <- function(x) {
+  labels <- unname(variable_labels[as.character(x)])
+  ifelse(is.na(labels), as.character(x), labels)
+}
+
+# Use compact, centred tables that stay within the page width in PDF output.
+# `groups` gives the section of each row and is used to add section headers.
+format_table <- function(x, ..., groups = NULL, notes = NULL, font_size = 8) {
+  table <- kableExtra::kbl(x, ..., booktabs = TRUE, linesep = "")
+
+  if (knitr::is_latex_output()) {
+    table <- table |>
+      kableExtra::kable_styling(
+        latex_options = c("hold_position", "scale_down"),
+        font_size = font_size,
+        full_width = FALSE,
+        position = "center"
+      )
+  } else {
+    table <- table |>
+      kableExtra::kable_styling(
+        bootstrap_options = c("condensed", "responsive"),
+        full_width = FALSE,
+        position = "center"
+      )
+  }
+
+  if (!is.null(groups)) {
+    table <- kableExtra::pack_rows(table, index = table(forcats::fct_inorder(groups)))
+  }
+  if (!is.null(notes)) {
+    table <- kableExtra::footnote(table, general = notes, threeparttable = TRUE,
+                                  general_title = "")
+  }
+  table
+}
+```
+
+
+
+```{r}
+#| label: data-prep
+#| include: false
+
+# Keep the country code as a character identifier; use numeric types for
+# continuous measures and Yes/No factors for binary indicators.
+continuous_variables <- intersect(
+  c(
+    "matmor", "infmor", "neomor", "un5mor", "gdp_1000", "pop_dens",
+    "urban", "age_dep", "male_edu", "temp", "rainfall_1000", "death_sum"
+  ),
+  names(analysis_data)
+)
+binary_variables <- intersect(
+  c("oecd", "Drought", "Earthquake", "conflict"),
+  names(analysis_data)
+)
+
+analysis_data <- analysis_data |>
+  mutate(
+    iso = as.character(iso),
+    year = as.integer(year),
+    across(all_of(continuous_variables), as.numeric),
+    across(all_of(binary_variables),
+           ~ factor(.x, levels = c(0, 1), labels = c("No", "Yes"))),
+    region = factor(region),
+    # order categories by severity rather than alphabetically
+    conflict_intensity = factor(
+      conflict_intensity,
+      levels = c("No conflict (<25 deaths)", "Minor conflict (25-999 deaths)",
+                 "War (>=1,000 deaths)")
+    ),
+    death_sum_quintile = factor(
+      death_sum_quintile,
+      levels = c("None (0 deaths)", paste("Positive deaths: quintile", 1:5))
+    )
+  )
+
+analysis_variables <- intersect(recode$var, setdiff(names(analysis_data), key_variables))
+
+analysis_data <- analysis_data |>
+  mutate(
+    any_missingness = factor(
+      if_any(all_of(analysis_variables), is.na),
+      levels = c(FALSE, TRUE), labels = c("Complete", "Incomplete")
+    )
+  )
+
+n_countries <- n_distinct(analysis_data$iso)
+year_range <- range(analysis_data$year)
+escape_latex <- function(x) {
+  if (knitr::is_latex_output()) gsub("%", "\\%", x, fixed = TRUE) else x
+}
+
+n_conflict <- sum(analysis_data$conflict == "Yes")
+n_complete <- sum(analysis_data$any_missingness == "Complete")
+n_matmor_missing <- sum(is.na(analysis_data$matmor))
+n_matmor_missing_late <- sum(is.na(analysis_data$matmor) & analysis_data$year > 2017)
+
+# Summarise `explanatory` variables across the levels of `dependent`, with the
+# group sizes in the column headers and a section header for each variable group.
+# `level_labels` optionally renames the levels of `dependent` in the headers.
+summary_by <- function(dependent, explanatory, cont = "median",
+                       level_labels = NULL) {
+  summary <- finalfit::summary_factorlist(
+    analysis_data,
+    dependent = dependent,
+    explanatory = explanatory,
+    cont = cont,
+    total_col = TRUE,
+    add_row_totals = TRUE,
+    include_row_totals_percent = FALSE,
+    row_totals_colname = "N",
+    row_missing_colname = "Missing"
+  ) |>
+    # summary_factorlist only labels the first row of each variable
+    mutate(var = na_if(label, "")) |>
+    fill(var)
+
+  counts <- table(analysis_data[[dependent]])
+  # a country can contribute country-years to more than one column
+  country_counts <- tapply(analysis_data$iso, analysis_data[[dependent]], n_distinct)
+  level_names <- if (is.null(level_labels)) names(counts) else level_labels
+  level_headers <- sprintf("%s\n(n = %d country-years,\n%d countries)", level_names,
+                           as.integer(counts), as.integer(country_counts))
+  total_header <- sprintf("Total\n(n = %d country-years,\n%d countries)",
+                          nrow(analysis_data), n_countries)
+
+  list(
+    table = summary |>
+      mutate(label = ifelse(label == "", "", label_variable(label))) |>
+      select(label, levels, all_of(names(counts)), Total, N, Missing) |>
+      # the table is built with escape = FALSE so the headers can wrap
+      mutate(across(everything(), escape_latex)),
+    col_names = kableExtra::linebreak(
+      c("Variable", "", level_headers, total_header, escape_latex("N (%)"), "Missing"),
+      align = "c"
+    ),
+    groups = unname(variable_groups[summary$var])
+  )
+}
+
+summary_notes <- function(cont = "median") {
+  c(
+    if (cont == "median") "Continuous variables: median (Q1 to Q3)." else
+      "Continuous variables: mean (SD).",
+    "Categorical variables: n (column %).",
+    "N (%), observations with non-missing data; Missing, observations with missing data.",
+    "A country can contribute country-years to more than one column, so country counts do not add up to the total."
+  )
+}
+
+print_summary <- function(summary, cont = "median", extra_notes = NULL) {
+  format_table(
+    summary$table,
+    col.names = summary$col_names,
+    escape = FALSE,
+    align = "llrrrrr",
+    groups = summary$groups,
+    notes = c(summary_notes(cont), extra_notes)
+  )
+}
+```
+
+## Fixed effects models 
+```{r}
+#| eval: false
+
+library(plm)
+lmmod <- lm(matmor ~ -1 + conflict + gdp_1000 + oecd + pop_dens + urban +
+              age_dep + male_edu + temp + rainfall_1000 + Earthquake + Drought +
+              iso + as.factor(year), 
+            data = analysis_data)
+
+            summary(lmmod)
+
+plmmod <- plm(matmor ~ conflict + gdp_1000 + oecd + pop_dens + urban +
+              age_dep + male_edu + temp + rainfall_1000 + Earthquake + Drought,
+              index = c("iso", "year"),
+              effect = "twoways",
+              model = "within",
+              data = analysis_data)
+summary(plmmod)
+
+
+analysis_data |> 
+    ggplot(aes(x = gdp_1000, y = matmor)) + 
+    geom_point()
+
+```
+
+```{r}
+library(plm)
+analysis_data$gpd_1000_log <- log(analysis_data$gdp_1000)
+
+
+preds <- as.formula("~ conflict + gpd_1000_log + oecd + pop_dens + urban +
+              age_dep + male_edu + temp + rainfall_1000 + Earthquake + Drought")
+
+maternal_mortalitymod <- plm(update.formula(preds, matmor ~ .),
+              index = c("iso", "year"),
+              effect = "twoways",
+              model = "within",
+               data = analysis_data)
+un5mormod <- plm(update.formula(preds, un5mor ~ .), 
+              index = c("iso", "year"),
+              effect = "twoways",
+              model = "within",
+              data = analysis_data)
+infmormod <- plm(update.formula(preds, infmor ~ .),               index = c("iso", "year"),
+              effect = "twoways",
+              model = "within",
+              data = analysis_data)
+neomormod <- plm(update.formula(preds, neomor ~ .),
+              index = c("iso", "year"),
+              effect = "twoways",
+              model = "within", data = analysis_data)
+
+## plm and lm shows the same same results, except plm doesn't show the coefficients for year and iso. we still need to put in the fixed effect for year (by adding year in the lm as a factor, and year in the index of plm (the results will be 2 ways ))
+```
+
+@tbl-plm-model shows the adjusted beta coefficients from the panel linear regression. 
+
+
+
+```{r output fro all models}
+#| label: tbl-plm-model
+#| tbl-cap: "The association between armed conflict and maternal/child mortality (adjusted beta coefficients, 95% confidence interval)"
+#| results: asis
+
+library(stargazer)
+
+# Factor terms come back as e.g. "oecdYes"; drop the level to look up the label.
+model_terms <- sub("Yes$", "", names(coef(maternal_mortalitymod)))
+term_labels <- ifelse(model_terms == "gpd_1000_log", "GDP per capita (log 1,000 USD)",
+                      label_variable(model_terms))
+
+stargazer(
+  maternal_mortalitymod, un5mormod, infmormod, neomormod,
+  type = if (knitr::is_latex_output()) "latex" else "html",
+  float = FALSE,           # Quarto supplies the table float and caption
+  header = FALSE,
+  ci = TRUE,
+  ci.separator = " to ",
+  report = "vcs",          # coefficient and CI (ci = TRUE puts the CI in the "s" slot)
+  omit.table.layout = "n", # drop the significance-star legend
+  star.cutoffs = NA,
+  digits = 2,
+  dep.var.caption = "Mortality outcome",
+  dep.var.labels.include = FALSE,
+  column.labels = c("Maternal", "Under-5", "Infant", "Neonatal"),
+  model.numbers = FALSE,
+  covariate.labels = escape_latex(term_labels),
+  keep.stat = "n",
+  add.lines = list(
+    c("Countries", sapply(list(maternal_mortalitymod, un5mormod, infmormod, neomormod),
+                          function(m) pdim(m)$nT$n)),
+    c("Country and year fixed effects", rep("Yes", 4))
+  ),
+  font.size = "small"
+)
+```
+
+
+## tobit model of maternal mortality - exploratory 
+- @tbl-tobit-model model cannot accomodate year and iso as fixed effect, left censor chosen as based on hypothetical unreducible maternal mortality 
+
+```{r tobit model}
+#| label: tbl-tobit-model
+#| tbl-cap: "The association between armed conflict and maternalmortality (adjusted beta coefficients, 95% confidence interval) - under tobit model where left censor <20"
+
+
+# the model in the paper doesn't show all the covariates 
+
+library(censReg)
+tobit_mod <- censReg(
+  matmor ~ conflict + gdp_1000 + oecd + pop_dens + urban + 
+           age_dep + male_edu + temp + rainfall_1000 + Earthquake + Drought + 
+           year, # cannot add factor year and iso as fixed effects, error ! Missings in the initial value computed at 'start'
+  left = 20,       # Force the floor at zero
+  data = analysis_data
+)
+
+summary(tobit_mod)
+```

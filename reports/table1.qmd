@@ -22,6 +22,7 @@ library(dplyr)
 library(tidyr)
 library(knitr)
 library(finalfit)
+library(ggplot2)
 
 
 analysis_data <- read.csv(
@@ -271,3 +272,6 @@ summary_by("any_missingness", analysis_variables) |>
     extra_notes = "Complete: no missing values in any variable; Incomplete: at least one missing value."
   )
 ```
+
+
+
