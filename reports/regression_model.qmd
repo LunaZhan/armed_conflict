@@ -23,6 +23,7 @@ library(tidyr)
 library(knitr)
 library(finalfit)
 library(ggplot2)
+library(mice)
 
 
 analysis_data <- read.csv(
@@ -258,10 +259,41 @@ analysis_data |>
 
 ```{r}
 library(plm)
-analysis_data$gpd_1000_log <- log(analysis_data$gdp_1000)
+analysis_data$gdp_1000_log <- log(analysis_data$gdp_1000)
 
 
-preds <- as.formula("~ conflict + gpd_1000_log + oecd + pop_dens + urban +
+for (v in c("conflict", "oecd", "Earthquake", "Drought")) {
+  analysis_data[[v]] <- as.integer(analysis_data[[v]] == "Yes")
+}
+```
+
+```{r running each lm model and inspecting}
+
+preds <- as.formula("~ -1 + conflict + gdp_1000_log + oecd + pop_dens + urban +
+              age_dep + male_edu + temp + rainfall_1000 + Earthquake + Drought + as.factor(iso) + as.factor(year)")
+
+maternal_mortalitymod_lm <- lm(update.formula(preds, matmor ~ .),
+               data = analysis_data)
+un5mormod <- plm(update.formula(preds, un5mor ~ .), 
+              index = c("iso", "year"),
+              effect = "twoways",
+              model = "within",
+              data = analysis_data)
+infmormod <- plm(update.formula(preds, infmor ~ .),               index = c("iso", "year"),
+              effect = "twoways",
+              model = "within",
+              data = analysis_data)
+neomormod <- plm(update.formula(preds, neomor ~ .),
+              index = c("iso", "year"),
+              effect = "twoways",
+              model = "within", data = analysis_data)
+
+## plm and lm shows the same same results, except plm doesn't show the coefficients for year and iso. we still need to put in the fixed effect for year (by adding year in the lm as a factor, and year in the index of plm (the results will be 2 ways ))
+```
+
+```{r running each plm model and inspecting}
+
+preds <- as.formula("~ conflict + gdp_1000_log + oecd + pop_dens + urban +
               age_dep + male_edu + temp + rainfall_1000 + Earthquake + Drought")
 
 maternal_mortalitymod <- plm(update.formula(preds, matmor ~ .),
@@ -290,16 +322,16 @@ neomormod <- plm(update.formula(preds, neomor ~ .),
 
 
 
-```{r output fro all models}
+```{r function to run all models}
 #| label: tbl-plm-model
 #| tbl-cap: "The association between armed conflict and maternal/child mortality (adjusted beta coefficients, 95% confidence interval)"
 #| results: asis
 
 library(stargazer)
 
-# Factor terms come back as e.g. "oecdYes"; drop the level to look up the label.
-model_terms <- sub("Yes$", "", names(coef(maternal_mortalitymod)))
-term_labels <- ifelse(model_terms == "gpd_1000_log", "GDP per capita (log 1,000 USD)",
+# Binary covariates are coded 0/1, so model terms match the variable names.
+model_terms <- names(coef(maternal_mortalitymod))
+term_labels <- ifelse(model_terms == "gdp_1000_log", "GDP per capita (log 1,000 USD)",
                       label_variable(model_terms))
 
 stargazer(
@@ -349,4 +381,145 @@ tobit_mod <- censReg(
 )
 
 summary(tobit_mod)
+```
+
+
+## Missing Data imputation
+
+```{r setting up multiple imputation 1st run}
+#| eval: false
+## do not run this MICE imputation chunk again, data is saved 
+
+finaldata <- analysis_data |> as.data.frame()
+
+
+midata <- finaldata |>
+  mutate(iso_num = as.numeric(as.factor(finaldata$iso))) |>
+  select(-iso, -region:-any_missingness, -gdp_1000) 
+
+set.seed(100)
+
+## The dry run to get the methods 
+mice0  <- mice(midata, seed = 100, m = 5, maxit = 0, print = F)
+
+meth <- mice0$method
+meth[c("urban", "male_edu", "temp", "rainfall_1000", "gdp_1000_log", "pop_dens",
+       "matmor", "infmor", "neomor", "un5mor")] <- "2l.lmer"
+
+pred <- mice0$predictorMatrix
+pred[c("urban", "male_edu", "temp", "rainfall_1000", "gdp_1000_log", "pop_dens",
+       "matmor", "infmor", "neomor", "un5mor"), "iso_num"] <- -2
+
+## the actual run after methods are set 
+mice.multi.out  <- mice(midata, seed = 100, m = 10, maxit = 20,
+                        method = meth,
+                        predictorMatrix = pred)
+
+
+
+
+save(mice.multi.out, file = "./outputs/mice_out.RData")
+```
+
+```{r}
+#| label: fig-plot-multiimp
+#| fig-cap: "Plot of multiple imputation"
+
+load("../outputs/mice_out.RData")
+plot(mice.multi.out)
+
+for (v in c("conflict", "oecd", "Earthquake", "Drought")) {
+  mice.multi.out$data[[v]] <- as.integer(mice.multi.out$data[[v]] == "Yes")
+}
+
+
+complete.data <- complete(mice.multi.out, "all")
+
+```
+
+```{r final imputed model}
+
+fit.mi.matmor <- with(mice.multi.out, 
+                      lm(matmor ~ -1 + conflict + gdp_1000_log + oecd + pop_dens + urban +
+              age_dep + male_edu + temp + rainfall_1000 + Earthquake + Drought + as.factor(iso_num) + as.factor(year)))
+
+out.mi.matmor <- pool(fit.mi.matmor)
+#summary(out.mi.matmor)
+
+
+fit.mi.infmor <- with(mice.multi.out, 
+                      lm(infmor ~ -1 + conflict + gdp_1000_log + oecd + pop_dens + urban +
+              age_dep + male_edu + temp + rainfall_1000 + Earthquake + Drought + as.factor(iso_num) + as.factor(year)))
+
+out.mi.infmor <- pool(fit.mi.infmor)
+
+fit.mi.neomor <- with(mice.multi.out, 
+                      lm(neomor ~ -1 + conflict + gdp_1000_log + oecd + pop_dens + urban +
+              age_dep + male_edu + temp + rainfall_1000 + Earthquake + Drought + as.factor(iso_num) + as.factor(year)))
+
+out.mi.neomor <- pool(fit.mi.neomor)
+
+fit.mi.un5mor <- with(mice.multi.out, 
+                      lm(un5mor ~ -1 + conflict + gdp_1000_log + oecd + pop_dens + urban +
+              age_dep + male_edu + temp + rainfall_1000 + Earthquake + Drought + as.factor(iso_num) + as.factor(year)))
+
+out.mi.un5mor <- pool(fit.mi.un5mor)
+```
+
+```{r output model tables}
+#| label: tbl-cc-mi-models
+#| tbl-cap: "The association between armed conflict and maternal/child mortality in the complete-case and multiple imputation (m = 10) analyses (adjusted beta coefficients, 95% confidence interval)"
+#| results: asis
+
+library(texreg)
+
+# Complete cases: the two-way fixed-effects plm models.
+# MI: the pooled lm models with country and year dummies.
+cc_models <- list(maternal_mortalitymod, un5mormod, infmormod, neomormod)
+mi_pooled <- list(out.mi.matmor, out.mi.un5mor, out.mi.infmor, out.mi.neomor)
+outcome_names <- c("Maternal", "Under-5", "Infant", "Neonatal")
+
+# texreg has no method for pooled mice results, so build the table entries
+# directly from the pooled estimates and their Rubin's-rules 95% CIs.
+mi_to_texreg <- function(p) {
+  s <- summary(p, conf.int = TRUE)
+  createTexreg(coef.names = as.character(s$term), coef = s$estimate,
+               se = s$std.error, pvalues = s$p.value,
+               ci.low = s$`2.5 %`, ci.up = s$`97.5 %`)
+}
+mi_models <- lapply(mi_pooled, mi_to_texreg)
+
+# Map every model term to its display label (model_terms and term_labels come
+# from the tbl-plm-model chunk); terms not in the map (the country and year
+# dummies) are dropped.
+coef_map <- as.list(setNames(escape_latex(term_labels), model_terms))
+
+n_countries_cc <- sapply(cc_models, function(m) pdim(m)$nT$n)
+n_obs <- c(sapply(cc_models, nobs), sapply(mi_pooled, function(p) p$glanced$nobs[1]))
+
+reg_args <- list(
+  l = c(cc_models, mi_models),
+  custom.header = list("Complete cases" = 1:4, "Multiple imputation (m = 10)" = 5:8),
+  custom.model.names = rep(outcome_names, 2),
+  custom.coef.map = coef_map,
+  custom.gof.rows = list(
+    "Observations" = n_obs,
+    "Countries" = c(n_countries_cc, rep(n_distinct(analysis_data$iso), 4)),
+    "Country and year fixed effects" = rep("Yes", 8)
+  ),
+  include.nobs = FALSE, include.rsquared = FALSE, include.adjrs = FALSE,
+  ci.force = TRUE,     # report 95% CI instead of SE (complete-case models)
+  ci.test = NA,        # no significance stars
+  digits = 2
+)
+
+# Save an HTML copy alongside the rendered table.
+do.call(htmlreg, c(reg_args, file = "../outputs/cc_mi_comparison.html"))
+
+if (knitr::is_latex_output()) {
+  do.call(texreg, c(reg_args, table = FALSE, use.packages = FALSE,
+                    booktabs = TRUE, scalebox = 0.7))
+} else {
+  do.call(htmlreg, reg_args)
+}
 ```
